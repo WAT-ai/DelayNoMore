@@ -4,64 +4,124 @@ from datetime import datetime
 from zipfile import ZipFile
 import os
 from io import StringIO
+from requests.auth import HTTPBasicAuth
+import json
+from bs4 import BeautifulSoup
+
 
 def scrape_feed_key():
-    
 
-def retrieve_gtfs_dates():
+    current_date = datetime.today()
+
+    year = current_date.year
+    month = current_date.month - 2
+
+    # GTFS is always atleast 2 months ahead. We need to add a 3 month buffer. So we need to get 3 months past the current date. If today is october, we are looking for July data. 
+
+    # GTFS for TTC
+    url = 'https://www.transit.land/feeds/f-dpz8-ttc'
+
+    response = requests.get(url)
+
+    # Parse the data using an html parser
+    soup = BeautifulSoup(response.content, "html.parser")
+
+    # The data containing all the feed versions we need is wrapped in tr element
+    for tr in soup.find_all('tr'):
+
+        for td in tr.find_all('td'):
+            if f"{year}-{str(month).zfill(2)}" in td.text:
+                # print(tr)
+                # Find the first <a> tag with an href attribute
+                a_tag = tr.find('a', href=True)  
+                if a_tag:
+                    feed_key = a_tag['href'].split("versions/")[-1]
+                    # return the first instance because the first instance will be the data in the earliest date show true column
+                    return feed_key
+
+def retrieve_gtfs_dates(feed_onestop_id):
    
-    gtfs = 'http://opendata.toronto.ca/toronto.transit.commission/ttc-routes-and-schedules/OpenData_TTC_Schedules.zip'
-    test = 'https://transit.land/api/v2/rest/api/v2/rest/feed_versions/{feed_version_key}'
+    # gtfs = 'http://opendata.toronto.ca/toronto.transit.commission/ttc-routes-and-schedules/OpenData_TTC_Schedules.zip'
+    dates = 'https://transit.land/api/v2/rest/feed_versions/{feed_onestop_id}?apikey={api_key}'
+    gtfs_zip = "https://transit.land/api/v2/rest/feed_versions/{feed_version_key}/download?apikey={api_key}"
+    api_key = 'JcYL2svv0eB7Fo2ETqwUnaEP4B4c762w'
     
     try:
-        
-        
+
+        dates_url = dates.format(feed_onestop_id = feed_onestop_id, api_key = api_key)
+        # print(test_url)
+
         # file may be large
-        response = requests.get(gtfs, stream=True)
+        response = requests.get(url=dates_url, headers={'apikey': api_key}, stream=True)
         
         # Raise an error if bad status code
         response.raise_for_status() 
-        file = "OpenData_TTC_Schedules.zip"
-        location = "./individual/franklin/"
-        path = location + file
+
+        data = response.json()
         
-        with open(path, "wb") as file:
+        feed_version = data.get("feed_versions", [{}])[0] # 
+
+         # Extract dates
+        earliest_start_date = feed_version.get("earliest_calendar_date")
+        latest_end_date = feed_version.get("latest_calendar_date")
+        
+        # Convert dates to datetime objects
+        if earliest_start_date:
+            earliest_start_date = datetime.strptime(earliest_start_date, "%Y-%m-%d")
+        if latest_end_date:
+            latest_end_date = datetime.strptime(latest_end_date, "%Y-%m-%d")
+
+        # Download the actual zip file associated with the feed_onestop_id (SHA1)
+        gtfs_zip_url = gtfs_zip.format(feed_version_key=feed_onestop_id, api_key = api_key)
+        response = requests.get(url=gtfs_zip_url, headers={'apikey': api_key}, stream=True)
+        response.raise_for_status() 
+
+        # Write the chunks and download the zip file
+        with open('GTFS{date1}to{date2}.zip'.format(date1=earliest_start_date.date(), date2=latest_end_date.date()), "wb") as file:
             for chunk in response.iter_content(chunk_size=8192):
                 file.write(chunk)
 
-        # opening the zip file in READ mode 
-        with ZipFile(path, 'r') as zip: 
-            # printing all the contents of the zip file 
-            zip.printdir() 
+            
+        # file = "{feed_onestop_id}.zip"
+        # location = "./individual/franklin/"
+        # path = location + file.format(feed_onestop_id = feed_onestop_id)
         
-            # TODO: GTFS is like months ahead of the COT data
-            # Extract only calendar.txt file
-            zip.extract('calendar.txt', path = location)
+        # with open(path, "wb") as file:
+        #     for chunk in response.iter_content(chunk_size=8192):
+        #         file.write(chunk)
+
+        # # opening the zip file in READ mode 
+        # with ZipFile(path, 'r') as zip: 
+        #     # printing all the contents of the zip file 
+        #     zip.printdir() 
+        
+        #     # TODO: GTFS is like months ahead of the COT data
+        #     # Extract only calendar.txt file
+        #     zip.extract('calendar.txt', path = location)
     
-            # type bytes
-            calendar = zip.read('calendar.txt')
+        #     # type bytes
+        #     calendar = zip.read('calendar.txt')
             
-            # Decode the bytes and convert into a df
-            data_str = calendar.decode('utf-8')
-            df = pd.read_csv(StringIO(data_str))
+        #     # Decode the bytes and convert into a df
+        #     data_str = calendar.decode('utf-8')
+        #     df = pd.read_csv(StringIO(data_str))
             
-            # The format we are receiving the date data
-            date_format = '%Y%m%d'
+        #     # The format we are receiving the date data
+        #     date_format = '%Y%m%d'
             
-            start_date = datetime.strptime(str(df['start_date'][0]), date_format)
-            end_date = datetime.strptime(str(df['end_date'][0]), date_format)
+        #     start_date = datetime.strptime(str(df['start_date'][0]), date_format)
+        #     end_date = datetime.strptime(str(df['end_date'][0]), date_format)
             
         
-        # Remove the files we downloaded
-        os.remove(path)    
-        os.remove(location + 'calendar.txt')
-        return [start_date, end_date]
+        # # Remove the files we downloaded
+        # os.remove(path)    
+        # os.remove(location + 'calendar.txt')
+
+        return [earliest_start_date, latest_end_date]
     
     except requests.exceptions.RequestException as e:
         print(f"An error occurred: {e}")
-        os.remove(path)
         
-
 def retrieve_corresponding_cot(dates):
     year = dates[0].year
     
@@ -96,53 +156,14 @@ def retrieve_corresponding_cot(dates):
 
     # Convert the whole column to datetime object for comparison
     df['Date'] = pd.to_datetime(df['Date']).dt.date
-    
+
+    # print(dates)
     df2 = df.loc[df["Date"].between(dates[0].date(), dates[1].date())]
-    print("After selecting the rows between the two dates:\n", df2)
-    
+    df2.to_csv('COT{date1}to{date2}'.format(date1=dates[0].date(), date2=dates[1].date()), index=False)
+
     os.remove(path)
     
-    # september_dates = df[df['Date'].dt.month == 9]
-    # print(september_dates)
-
-    # os.remove("test.xlsx")
-    # filtered_df = read_file.query('')
-
-
-
-    # read_file.to_csv ("Test.csv",  index = None, header=True) 
-
-    # Convert to a pandas df
-    # df = pd.DataFrame(pd.read_csv("Test.csv")) 
-
-    # print(df)
-
-retrieve_corresponding_cot(retrieve_gtfs_dates())
-
-# import requests
-
-# # Toronto Open Data is stored in a CKAN instance. It's APIs are documented here:
-# # https://docs.ckan.org/en/latest/api/
-
-# # To hit our API, you'll be making requests to:
-# base_url = "https://ckan0.cf.opendata.inter.prod-toronto.ca"
-
-# # Datasets are called "packages". Each package can contain many "resources"
-# # To retrieve the metadata for this package and its resources, use the package name in this page's URL:
-# url = base_url + "/api/3/action/package_show"
-# params = { "id": "ttc-bus-delay-data"}
-# package = requests.get(url, params = params).json()
-# print(package)
-
-# # To get resource data:
-# for idx, resource in enumerate(package["result"]["resources"]):
-
-#        # To get metadata for non datastore_active resources:
-#        if not resource["datastore_active"]:
-#            url = base_url + "/api/3/action/resource_show?id=" + resource["id"]
-#            resource_metadata = requests.get(url).json()
-#            print(resource_metadata)
-#            # From here, you can use the "url" attribute to download this file
-
-
-
+if __name__ == '__main__':
+    feed_key = scrape_feed_key()
+    gtf_dates = retrieve_gtfs_dates(feed_key)
+    retrieve_corresponding_cot(gtf_dates)
